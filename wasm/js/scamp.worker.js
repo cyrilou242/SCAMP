@@ -60,13 +60,24 @@ function post(msg, transfer) {
   }
 }
 
-async function handleRun(id, args) {
+async function handleRun(id, args, wantSnapshot) {
   try {
     // Coerce plain arrays into Float64Array for the fast path in bindings.
     if (Array.isArray(args.a)) args.a = new Float64Array(args.a);
     if (Array.isArray(args.b)) args.b = new Float64Array(args.b);
 
-    const onProgress = (done, total) => post({ kind: 'progress', id, done, total });
+    // If the client asked for live snapshots we call Module.getSnapshot()
+    // from inside the progress callback. Only meaningful in the ST build
+    // (in MT the compute pthread and JS thread interleave in a way that
+    // makes emscripten::val calls from workers fail; documented in README).
+    const onProgress = (done, total) => {
+      const msg = { kind: 'progress', id, done, total };
+      if (wantSnapshot) {
+        const snap = Module.getSnapshot();
+        if (snap != null) msg.snapshot = snap;
+      }
+      post(msg);
+    };
     const result = Module.runSCAMP(args, onProgress);
     post({ kind: 'result', id, result });
   } catch (err) {
@@ -127,7 +138,7 @@ async function main() {
 
 function dispatch(msg) {
   if (!msg) return;
-  if (msg.kind === 'run') handleRun(msg.id, msg.args);
+  if (msg.kind === 'run') handleRun(msg.id, msg.args, msg.wantSnapshot);
   else if (msg.kind === 'abort') handleAbort(msg.id);
 }
 

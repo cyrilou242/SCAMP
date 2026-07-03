@@ -61,7 +61,19 @@ export type SCAMPResult = {
 
 export interface RunOptions {
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Called with a decoded snapshot of the current profile after each
+   * tile completes. Only fires in the single-threaded wasm build; the
+   * MT build documents this hook as unsupported (Emscripten's `val`
+   * cannot cross worker-pthread ↔ main-pthread boundaries safely).
+   */
+  onSnapshot?: (snapshot: SCAMPResult['a'], done: number, total: number) => void;
   signal?: AbortSignal;
+  /**
+   * If true, transfer input TypedArray buffers to the worker rather
+   * than copying. Faster but detaches the caller's arrays. Default false.
+   */
+  transfer?: boolean;
 }
 
 export interface CreateOptions {
@@ -71,10 +83,29 @@ export interface CreateOptions {
   baseUrl?: string;
 }
 
+export interface SumOpts extends RunOptions {
+  threshold?: number;
+}
+export interface MatrixOpts extends RunOptions {
+  matrixHeight?: number;
+  matrixWidth?: number;
+}
+
 export interface SCAMPClient {
   readonly threads: number;
   run(args: SCAMPArgs, opts?: RunOptions): Promise<SCAMPResult>;
   terminate(): Promise<void>;
+
+  /** Sugar helpers mirroring pyscamp's function surface. */
+  selfJoin(a: Float64Array | number[], window: number, opts?: RunOptions): Promise<SCAMPResult>;
+  selfJoin1NN(a: Float64Array | number[], window: number, opts?: RunOptions): Promise<SCAMPResult>;
+  selfJoinSum(a: Float64Array | number[], window: number, opts?: SumOpts): Promise<SCAMPResult>;
+  selfJoinMatrix(a: Float64Array | number[], window: number, opts?: MatrixOpts): Promise<SCAMPResult>;
+
+  abJoin(a: Float64Array | number[], b: Float64Array | number[], window: number, opts?: RunOptions): Promise<SCAMPResult>;
+  abJoin1NN(a: Float64Array | number[], b: Float64Array | number[], window: number, opts?: RunOptions): Promise<SCAMPResult>;
+  abJoinSum(a: Float64Array | number[], b: Float64Array | number[], window: number, opts?: SumOpts): Promise<SCAMPResult>;
+  abJoinMatrix(a: Float64Array | number[], b: Float64Array | number[], window: number, opts?: MatrixOpts): Promise<SCAMPResult>;
 }
 
 export function create(opts?: CreateOptions): Promise<SCAMPClient>;

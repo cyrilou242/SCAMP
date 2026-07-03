@@ -109,6 +109,9 @@
         if (p.onProgress) {
           try { p.onProgress(msg.done, msg.total); } catch (_) {}
         }
+        if (p.onSnapshot && msg.snapshot) {
+          try { p.onSnapshot(msg.snapshot, msg.done, msg.total); } catch (_) {}
+        }
       } else if (msg.kind === 'result') {
         this._pending.delete(msg.id);
         if (p.signal && p.onAbortCleanup) p.signal.removeEventListener('abort', p.onAbortCleanup);
@@ -127,13 +130,13 @@
 
     run(args, opts) {
       opts = opts || {};
-      const { onProgress, signal } = opts;
+      const { onProgress, onSnapshot, signal } = opts;
       if (signal && signal.aborted) {
         return Promise.reject(new DOMException('Aborted', 'AbortError'));
       }
       const id = this._nextId++;
       return new Promise((resolve, reject) => {
-        const entry = { resolve, reject, onProgress, signal };
+        const entry = { resolve, reject, onProgress, onSnapshot, signal };
         if (signal) {
           entry.onAbortCleanup = () => {
             this._post({ kind: 'abort', id });
@@ -149,19 +152,54 @@
         // idle pthreads.
         const cppArgs = Object.assign({}, args);
         if (cppArgs.threads === undefined) cppArgs.threads = this._threads;
-        // Transfer TypedArray buffers where present to avoid a copy.
+        // Zero-copy path is opt-in: `transfer: true` neuters the caller's
+        // input buffers, which is fine for one-shot use but breaks any
+        // caller that reuses the same input array across .run() calls.
+        // Default behaviour is a structured-clone copy.
         const transfer = [];
-        if (cppArgs.a && cppArgs.a.buffer instanceof ArrayBuffer)
-          transfer.push(cppArgs.a.buffer);
-        if (cppArgs.b && cppArgs.b.buffer instanceof ArrayBuffer)
-          transfer.push(cppArgs.b.buffer);
-        this._post({ kind: 'run', id, args: cppArgs }, transfer);
+        if (opts && opts.transfer) {
+          if (cppArgs.a && cppArgs.a.buffer instanceof ArrayBuffer)
+            transfer.push(cppArgs.a.buffer);
+          if (cppArgs.b && cppArgs.b.buffer instanceof ArrayBuffer)
+            transfer.push(cppArgs.b.buffer);
+        }
+        this._post({
+          kind: 'run', id, args: cppArgs,
+          wantSnapshot: typeof onSnapshot === 'function',
+        }, transfer);
       });
     }
 
     async terminate() {
       if (IS_NODE) await this._worker.terminate();
       else this._worker.terminate();
+    }
+
+    // -----------------------------------------------------------------
+    // Convenience wrappers mirroring pyscamp's function surface.
+    // All accept the same trailing `opts` object as `run()`.
+    // -----------------------------------------------------------------
+
+    selfJoin(a, window, opts)          { return this.run({ a, window, profileType: '1NN_INDEX' },       opts); }
+    selfJoin1NN(a, window, opts)       { return this.run({ a, window, profileType: '1NN' },              opts); }
+    selfJoinSum(a, window, opts = {})  { return this.run({ a, window, profileType: 'SUM_THRESH',      threshold: opts.threshold ?? 0 }, opts); }
+    selfJoinMatrix(a, window, opts = {}) {
+      return this.run({
+        a, window, profileType: 'MATRIX_SUMMARY',
+        matrixHeight: opts.matrixHeight ?? 50,
+        matrixWidth:  opts.matrixWidth  ?? 50,
+      }, opts);
+    }
+
+    abJoin(a, b, window, opts)         { return this.run({ a, b, window, profileType: '1NN_INDEX' },     opts); }
+    abJoin1NN(a, b, window, opts)      { return this.run({ a, b, window, profileType: '1NN' },            opts); }
+    abJoinSum(a, b, window, opts = {}) { return this.run({ a, b, window, profileType: 'SUM_THRESH',    threshold: opts.threshold ?? 0 }, opts); }
+    abJoinMatrix(a, b, window, opts = {}) {
+      return this.run({
+        a, b, window, profileType: 'MATRIX_SUMMARY',
+        matrixHeight: opts.matrixHeight ?? 50,
+        matrixWidth:  opts.matrixWidth  ?? 50,
+      }, opts);
     }
   }
 

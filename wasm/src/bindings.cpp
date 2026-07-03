@@ -38,20 +38,26 @@ namespace {
 // another JS context (in the MT build, the compute runs on a pthread
 // while JS remains responsive on the main pthread; in ST, abort is
 // only reachable from the progress callback which we invoke between
-// tiles).
+// tiles). g_active_args lets getSnapshot() reach into the live profile
+// mid-computation for the demo's anytime plot.
 // ------------------------------------------------------------------
 std::mutex g_run_mu;
 SCAMP::SCAMP_Operation* g_active_op = nullptr;
+SCAMP::SCAMPArgs* g_active_args = nullptr;
+bool g_active_pearson = false;
 
 class ActiveOpGuard {
  public:
-  explicit ActiveOpGuard(SCAMP::SCAMP_Operation* op) {
+  ActiveOpGuard(SCAMP::SCAMP_Operation* op, SCAMP::SCAMPArgs* args, bool pearson) {
     std::lock_guard<std::mutex> lk(g_run_mu);
     g_active_op = op;
+    g_active_args = args;
+    g_active_pearson = pearson;
   }
   ~ActiveOpGuard() {
     std::lock_guard<std::mutex> lk(g_run_mu);
     g_active_op = nullptr;
+    g_active_args = nullptr;
   }
   ActiveOpGuard(const ActiveOpGuard&) = delete;
   ActiveOpGuard& operator=(const ActiveOpGuard&) = delete;
@@ -176,23 +182,23 @@ val splitKNN(std::vector<std::priority_queue<
   return arr;
 }
 
-val splitMatrix(const std::vector<std::vector<float>>& mat,
+// MATRIX_SUMMARY output: SCAMP writes a flat float vector of length
+// (matrix_height * matrix_width) into profile.data[0].float_value. The
+// 2D shape lives in args, not on the profile itself — mirrors pyscamp's
+// scamp_matrix() (SCAMP_python.cpp:409-411).
+val splitMatrix(const std::vector<float>& flat_raw, int height, int width,
                 bool output_pearson, int window) {
-  const size_t h = mat.size();
-  const size_t w = h == 0 ? 0 : mat[0].size();
-  std::vector<float> flat(h * w);
-  for (size_t r = 0; r < h; ++r) {
-    for (size_t c = 0; c < w; ++c) {
-      flat[r * w + c] = output_pearson ? CleanupPearson(mat[r][c])
-                                        : ConvertToEuclidean(mat[r][c], window);
-    }
+  std::vector<float> flat(flat_raw.size());
+  for (size_t i = 0; i < flat_raw.size(); ++i) {
+    flat[i] = output_pearson ? CleanupPearson(flat_raw[i])
+                              : ConvertToEuclidean(flat_raw[i], window);
   }
   val out = val::object();
   out.set("values",
           val(emscripten::typed_memory_view(flat.size(), flat.data()))
               .call<val>("slice"));
-  out.set("height", static_cast<int32_t>(h));
-  out.set("width", static_cast<int32_t>(w));
+  out.set("height", height);
+  out.set("width", width);
   return out;
 }
 
@@ -313,7 +319,7 @@ val runSCAMP(val argsObj, val onProgress) {
       args.is_aligned, args.silent_mode, num_threads,
       args.max_matches_per_column, args.matrix_height, args.matrix_width);
 
-  ActiveOpGuard guard(&op);
+  ActiveOpGuard guard(&op, &args, pearson);
 
   // Wire progress. Only supported in the single-threaded wasm build:
   // emscripten::val is bound to the pthread that constructed it, so
@@ -355,7 +361,10 @@ val runSCAMP(val argsObj, val onProgress) {
       case SCAMP::PROFILE_TYPE_APPROX_ALL_NEIGHBORS:
         return splitKNN(p.data[0].match_value, pearson, args.window);
       case SCAMP::PROFILE_TYPE_MATRIX_SUMMARY:
-        return splitMatrix(p.data[0].matrix_value, pearson, args.window);
+        return splitMatrix(p.data[0].float_value,
+                           static_cast<int>(args.matrix_height),
+                           static_cast<int>(args.matrix_width),
+                           pearson, args.window);
       default:
         throw std::runtime_error("Unsupported profile type in output packing");
     }
@@ -375,9 +384,41 @@ void abortSCAMP() {
   }
 }
 
+// Snapshot of the currently-running op's profile_a. Intended to be
+// called from JS inside a progress callback (ST build only; in MT the
+// main pthread is blocked so the JS callback path deadlocks — see
+// scamp_wasm's progress-callback limitation in wasm/README.md).
+//
+// Returns null when no op is running or the profile type doesn't
+// support cheap mid-run snapshots (KNN in particular is a per-column
+// priority queue; not worth exposing).
+val getSnapshot() {
+  std::lock_guard<std::mutex> lk(g_run_mu);
+  if (g_active_op == nullptr || g_active_args == nullptr) return val::null();
+  auto& args = *g_active_args;
+  auto& p = args.profile_a;
+  const int window = static_cast<int>(args.window);
+  switch (args.profile_type) {
+    case SCAMP::PROFILE_TYPE_1NN_INDEX:
+      return split1NNIndex(p.data[0].uint64_value, g_active_pearson, window);
+    case SCAMP::PROFILE_TYPE_1NN:
+      return split1NN(p.data[0].float_value, g_active_pearson, window);
+    case SCAMP::PROFILE_TYPE_SUM_THRESH:
+      return splitSum(p.data[0].double_value);
+    case SCAMP::PROFILE_TYPE_MATRIX_SUMMARY:
+      return splitMatrix(p.data[0].float_value,
+                         static_cast<int>(args.matrix_height),
+                         static_cast<int>(args.matrix_width),
+                         g_active_pearson, window);
+    default:
+      return val::null();
+  }
+}
+
 EMSCRIPTEN_BINDINGS(scamp) {
   emscripten::function("runSCAMP", &runSCAMP);
   emscripten::function("abortSCAMP", &abortSCAMP);
+  emscripten::function("getSnapshot", &getSnapshot);
 }
 
 // Required by Emscripten's -sPROXY_TO_PTHREAD in the MT build (link

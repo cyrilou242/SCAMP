@@ -103,16 +103,25 @@
           const m = Number($('m').value);
           const a = synth(n);
           drawSeries('tsChart', a, '#248');
-          log(`Running SCAMP: n=${n}, window=${m}...`);
+          // Aim for ~16 tiles so the onSnapshot animation is smooth in ST.
+          // Purely a demo-UX choice; larger tile size is faster in absolute
+          // wall-clock for a batch run.
+          const maxTileSize = Math.max(512, Math.floor(n / 5));
+          log(`Running SCAMP: n=${n}, window=${m}, maxTileSize=${maxTileSize}...`);
           $('elapsed').textContent = '';
           const t0 = performance.now();
           const result = await c.run(
-            { a, window: m, profileType: '1NN_INDEX', precision: 'double', silent: true },
+            { a, window: m, profileType: '1NN_INDEX', precision: 'double', maxTileSize, silent: true },
             {
               onProgress: (done, total) => {
                 $('prog').max = total; $('prog').value = done;
                 log(`progress: ${done}/${total}`);
               },
+              // onSnapshot fires only in the ST build (documented
+              // limitation of the MT build). Redraws the profile as it
+              // settles: initially all-ones (initial worst-case bound),
+              // dropping into its final shape as tiles complete.
+              onSnapshot: (snap) => drawSeries('chart', snap.profile, '#0a6'),
               signal: abortCtrl.signal,
             }
           );

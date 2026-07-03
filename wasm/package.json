@@ -10,7 +10,9 @@
     "build": "bash build.sh both",
     "build:st": "bash build.sh st",
     "build:mt": "bash build.sh mt",
-    "test": "node test/node-smoke.mjs",
+    "test": "node test/node-smoke.mjs && node test/correctness.mjs",
+    "test:smoke": "node test/node-smoke.mjs",
+    "test:correctness": "node test/correctness.mjs",
     "serve:demo": "node serve.mjs 8090"
   },
   "license": "Apache-2.0"
