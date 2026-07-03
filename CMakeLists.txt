@@ -127,6 +127,32 @@ fetch_env(BUILD_CLIENT_SERVER)
 fetch_env(SCAMP_USE_CLANG_TIDY)
 fetch_env(BUILDING_PYSCAMP)
 
+# WebAssembly build. When ON, we skip the CLI executable, gflags, gRPC/
+# distributed, pybind, and benchmarks; only the core libraries + the
+# Emscripten-embind bindings under wasm/ are built.
+option(SCAMP_BUILD_WASM "Build the WebAssembly bindings (Emscripten toolchain required)" OFF)
+option(SCAMP_WASM_THREADS "Enable pthreads in the WebAssembly build (requires COOP/COEP at runtime)" OFF)
+if (SCAMP_BUILD_WASM AND NOT SCAMP_WASM_THREADS)
+  # Compile out std::async/std::thread usage in the core.
+  add_definitions(-DSCAMP_NO_ASYNC)
+endif()
+if (SCAMP_BUILD_WASM AND SCAMP_WASM_THREADS)
+  # Propagate -pthread to every SCAMP target so wasm-ld sees consistent
+  # atomics/bulk-memory features across all objects, and so libc-mt gets
+  # linked automatically for transitive libraries.
+  add_compile_options(-pthread)
+  add_link_options(-pthread)
+endif()
+if (SCAMP_BUILD_WASM)
+  # Turn on wasm SIMD128 + expose the full SSE/AVX intrinsic set through
+  # Emscripten's <xmmintrin.h>/<emmintrin.h>/<avxintrin.h>/... shims.
+  # Together these define __SSE*__ and __AVX__ at build time, which
+  # triggers Eigen's AVX vectorisation path (Packet4d, 4 doubles per
+  # 256-bit logical vector, lowered by Emscripten to pairs of 128-bit
+  # wasm SIMD ops with better unrolling than the SSE path).
+  add_compile_options(-msimd128 -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mavx)
+endif()
+
 if (SCAMP_ENABLE_BINARY_DISTRIBUTION)
   message(STATUS "Building REDISTRIBUTABLE SCAMP Binary.")
 endif()
@@ -321,25 +347,31 @@ if (BUILD_BENCHMARKS)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/benchmark)
 endif()
 
-if(NOT TARGET gflags)
-  add_subdirectory(third_party/gflags)
-  include_directories(third_party/gflags/include/)
-else()
-  # We already produced gflags target from building the SCAMP client and server
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/grpc/third_party/gflags/include/)
+if (NOT SCAMP_BUILD_WASM)
+  if(NOT TARGET gflags)
+    add_subdirectory(third_party/gflags)
+    include_directories(third_party/gflags/include/)
+  else()
+    # We already produced gflags target from building the SCAMP client and server
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/grpc/third_party/gflags/include/)
+  endif()
+
+  # C++/CUDA executable
+  add_executable(SCAMP ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
+  if (CMAKE_CUDA_COMPILER)
+    target_compile_definitions(SCAMP PUBLIC -D_HAS_CUDA_)
+  endif()
+  target_link_libraries(SCAMP gflags common scamp_interface scamp_utils)
+  if (CMAKE_CUDA_COMPILER)
+    # autotune_bench provides the synthetic-workload benchmark that the
+    # --autotune CLI path drives. Only linked in CUDA builds since the CLI's
+    # --autotune flag itself is gated on _HAS_CUDA_.
+    target_link_libraries(SCAMP autotune_bench)
+  endif()
 endif()
 
-# C++/CUDA executable
-add_executable(SCAMP ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
-if (CMAKE_CUDA_COMPILER)
-  target_compile_definitions(SCAMP PUBLIC -D_HAS_CUDA_)
-endif()
-target_link_libraries(SCAMP gflags common scamp_interface scamp_utils)
-if (CMAKE_CUDA_COMPILER)
-  # autotune_bench provides the synthetic-workload benchmark that the
-  # --autotune CLI path drives. Only linked in CUDA builds since the CLI's
-  # --autotune flag itself is gated on _HAS_CUDA_.
-  target_link_libraries(SCAMP autotune_bench)
+if (SCAMP_BUILD_WASM)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/wasm)
 endif()
 
 # Unit tests. enable_testing() must run at the top-level CMakeLists scope

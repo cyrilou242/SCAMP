@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SCAMP-wasm demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+      pre { background: #f3f3f3; padding: 0.75rem; overflow-x: auto; }
+      #chart { width: 100%; height: 200px; border: 1px solid #ccc; }
+      progress { width: 100%; }
+      button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <nav style="margin-bottom:1rem"><a href="./benchmark.html">CPU benchmark →</a></nav>
+
+    <h1>SCAMP-wasm demo</h1>
+    <p>Computes a self-join 1NN matrix profile on a synthetic time series.</p>
+
+    <label>Length: <input id="n" type="number" value="4096" min="256" max="5000000" step="256" /></label>
+    <label>Window: <input id="m" type="number" value="128" min="8" /></label>
+    <label>Threads: <select id="threads">
+      <option value="auto">auto</option>
+      <option value="1" selected>1 (ST)</option>
+      <option value="2">2</option>
+      <option value="4">4</option>
+      <option value="8">8</option>
+    </select></label>
+    <br /><br />
+    <button id="run">Run</button>
+    <button id="abort" disabled>Abort</button>
+    <progress id="prog" value="0" max="1"></progress>
+    <div id="elapsed" style="margin-top:0.5rem;font-family:monospace;"></div>
+
+    <h3>Status</h3>
+    <pre id="log"></pre>
+
+    <h3>Input time series</h3>
+    <canvas id="tsChart" width="900" height="160"></canvas>
+
+    <h3>Matrix profile (distance)</h3>
+    <canvas id="chart" width="900" height="200"></canvas>
+
+    <!-- Load SCAMP as a classic script (UMD global). -->
+    <script src="../dist/scamp.js"></script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const log = (msg) => { $('log').textContent += msg + '\n'; };
+
+      let scamp = null;
+      let abortCtrl = null;
+
+      async function ensureClient(threads) {
+        if (scamp && scamp.threads === (threads === 'auto' ? scamp.threads : Number(threads))) return scamp;
+        if (scamp) await scamp.terminate();
+        log(`Booting SCAMP (threads=${threads})...`);
+        scamp = await SCAMP.create({ threads, baseUrl: '../dist/' });
+        log(`Ready. Actual thread count: ${scamp.threads}. crossOriginIsolated=${self.crossOriginIsolated}`);
+        return scamp;
+      }
+
+      function synth(n) {
+        const a = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+          a[i] = Math.sin(i * 0.05) + 0.2 * Math.sin(i * 0.31) + 0.1 * Math.random();
+        }
+        // Plant a repeated motif.
+        for (let i = 0; i < 128 && i + 1000 < n && i + 3000 < n; i++) {
+          const v = Math.cos(i * 0.15);
+          a[1000 + i] = v; a[3000 + i] = v;
+        }
+        return a;
+      }
+
+      function drawSeries(canvasId, data, color) {
+        const c = $(canvasId);
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, c.width, c.height);
+        let mn = Infinity, mx = -Infinity;
+        for (const v of data) {
+          if (Number.isFinite(v)) { if (v < mn) mn = v; if (v > mx) mx = v; }
+        }
+        if (mn === Infinity) return;
+        ctx.beginPath();
+        for (let i = 0; i < data.length; i++) {
+          const x = (i / data.length) * c.width;
+          const y = c.height - ((data[i] - mn) / (mx - mn || 1)) * c.height;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      }
+
+      $('run').addEventListener('click', async () => {
+        $('log').textContent = '';
+        $('prog').value = 0;
+        $('run').disabled = true;
+        $('abort').disabled = false;
+        abortCtrl = new AbortController();
+        try {
+          const c = await ensureClient($('threads').value);
+          const n = Number($('n').value);
+          const m = Number($('m').value);
+          const a = synth(n);
+          drawSeries('tsChart', a, '#248');
+          // Aim for ~16 tiles so the onSnapshot animation is smooth in ST.
+          // Purely a demo-UX choice; larger tile size is faster in absolute
+          // wall-clock for a batch run.
+          const maxTileSize = Math.max(512, Math.floor(n / 5));
+          log(`Running SCAMP: n=${n}, window=${m}, maxTileSize=${maxTileSize}...`);
+          $('elapsed').textContent = '';
+          const t0 = performance.now();
+          const result = await c.run(
+            { a, window: m, profileType: '1NN_INDEX', precision: 'double', maxTileSize, silent: true },
+            {
+              onProgress: (done, total) => {
+                $('prog').max = total; $('prog').value = done;
+                log(`progress: ${done}/${total}`);
+              },
+              // onSnapshot fires only in the ST build (documented
+              // limitation of the MT build). Redraws the profile as it
+              // settles: initially all-ones (initial worst-case bound),
+              // dropping into its final shape as tiles complete.
+              onSnapshot: (snap) => drawSeries('chart', snap.profile, '#0a6'),
+              signal: abortCtrl.signal,
+            }
+          );
+          const dt = performance.now() - t0;
+          const elapsedText = dt >= 1000
+            ? `Computation: ${(dt / 1000).toFixed(2)} s (${dt.toFixed(0)} ms)`
+            : `Computation: ${dt.toFixed(0)} ms`;
+          $('elapsed').textContent = elapsedText;
+          log(`${elapsedText}. profile length = ${result.a.profile.length}`);
+          drawSeries('chart', result.a.profile, '#0a6');
+        } catch (err) {
+          log('Error: ' + (err.message || err));
+        } finally {
+          $('run').disabled = false;
+          $('abort').disabled = true;
+        }
+      });
+
+      $('abort').addEventListener('click', () => {
+        if (abortCtrl) { abortCtrl.abort(); log('Abort requested.'); }
+      });
+    </script>
+  </body>
+</html>

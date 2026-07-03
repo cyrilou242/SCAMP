@@ -1,0 +1,4 @@
+.DS_Store
+wasm/.playwright-cli/
+build-native-bench/
+wasm/notes/papers/
