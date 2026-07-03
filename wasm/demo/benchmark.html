@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SCAMP-wasm benchmark</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+      pre { background: #f3f3f3; padding: 0.75rem; overflow-x: auto; }
+      table { border-collapse: collapse; margin-top: 1rem; }
+      th, td { border: 1px solid #ccc; padding: 0.4rem 0.7rem; text-align: right; font-variant-numeric: tabular-nums; }
+      th { background: #f0f0f0; text-align: center; }
+      td.name { text-align: left; font-family: ui-monospace, monospace; }
+      td.ratio { font-weight: 600; }
+      td.ratio.slower { color: #a03; }
+      td.ratio.faster { color: #0a5; }
+      button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
+      nav { margin-bottom: 1rem; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="./">← self-join demo</a>
+    </nav>
+
+    <h1>SCAMP-wasm CPU benchmark</h1>
+    <p>
+      Runs the exact 4 profile types + parameters used by SCAMP's
+      <a target="_blank" href="https://zpzim.github.io/SCAMP/cpu-benchmarks/linux-stable/clang++/bench/">upstream CI benchmark</a>
+      (see <code>src/benchmark/common.cpp</code>): n=32768, window=100,
+      max_tile_size=131072, precision=double, threads=1, random input.
+    </p>
+    <p>Comparison baseline: <strong>i7-8700K, clang++ with AVX2</strong> (native), from CI.</p>
+
+    <label>Iterations per profile type:
+      <input id="iters" type="number" value="5" min="1" max="20" />
+    </label>
+    <button id="run">Run benchmark</button>
+    <span id="status"></span>
+
+    <table id="results">
+      <thead>
+        <tr>
+          <th>Benchmark</th>
+          <th>wasm-st (s/iter)</th>
+          <th>native AVX2 baseline (s/iter)</th>
+          <th>wasm / native</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <h3>Log</h3>
+    <pre id="log"></pre>
+
+    <script src="../dist/scamp.js"></script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const log = (m) => { $('log').textContent += m + '\n'; };
+
+      // Latest upstream CI numbers (i7-8700K, clang++ AVX2, single thread).
+      // Update by refreshing from https://zpzim.github.io/SCAMP/cpu-benchmarks/...
+      // (kept static to sidestep COEP=require-corp cross-origin restrictions).
+      const BASELINE = {
+        BM_1NN_INDEX_SELF_JOIN: 0.5547,
+        BM_1NN_SELF_JOIN:       0.2363,
+        BM_SUM_SELF_JOIN:       0.3196,
+        BM_MATRIX_SELF_JOIN:    1.0954,
+      };
+
+      // Exact parameters used by src/benchmark/common.cpp.
+      const N = 32768;
+      const W = 100;
+      const MAX_TILE_SIZE = 1 << 17;   // 131072
+      const BENCHES = [
+        { key: 'BM_1NN_INDEX_SELF_JOIN', profileType: '1NN_INDEX' },
+        { key: 'BM_1NN_SELF_JOIN',       profileType: '1NN' },
+        { key: 'BM_SUM_SELF_JOIN',       profileType: 'SUM_THRESH' },
+        { key: 'BM_MATRIX_SELF_JOIN',    profileType: 'MATRIX_SUMMARY',
+          extra: { matrixHeight: 100, matrixWidth: 100 } },
+      ];
+
+      // Deterministic seed so successive runs use the same data (Google
+      // Benchmark's static default_random_engine also yields deterministic
+      // output across iterations of the same run).
+      function makeInput(n) {
+        const a = new Float64Array(n);
+        let s = 0x243f6a88;  // arbitrary
+        const rand = () => { s = (s * 1664525 + 1013904223) | 0; return ((s >>> 0) / 0x100000000); };
+        for (let i = 0; i < n; i++) a[i] = rand();
+        return a;
+      }
+
+      function median(xs) {
+        const s = [...xs].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : 0.5 * (s[m - 1] + s[m]);
+      }
+
+      async function runOne(scamp, bench, iters) {
+        const args = {
+          window: W,
+          maxTileSize: MAX_TILE_SIZE,
+          precision: 'double',
+          profileType: bench.profileType,
+          silent: true,
+          threads: 1,
+          ...(bench.extra || {}),
+        };
+        const times = [];
+        for (let i = 0; i < iters; i++) {
+          // Rebuild input each iter so a transferred buffer isn't consumed
+          // (postMessage transfer neuters the original Float64Array).
+          const a = makeInput(N);
+          const t0 = performance.now();
+          await scamp.run({ a, ...args });
+          const dt = (performance.now() - t0) / 1000;
+          times.push(dt);
+          log(`  ${bench.key} iter ${i + 1}/${iters}: ${dt.toFixed(3)} s`);
+        }
+        return median(times);
+      }
+
+      $('run').addEventListener('click', async () => {
+        $('log').textContent = '';
+        $('results').querySelector('tbody').innerHTML = '';
+        $('run').disabled = true;
+        $('status').textContent = 'booting…';
+        try {
+          // Force single-threaded to match the CI benchmark (threads=1).
+          const scamp = await SCAMP.create({ threads: 1, baseUrl: '../dist/' });
+          $('status').textContent = 'running…';
+          const iters = Math.max(1, Number($('iters').value) | 0);
+          const tbody = $('results').querySelector('tbody');
+          for (const bench of BENCHES) {
+            log(`\n=== ${bench.key} (${bench.profileType}) ===`);
+            const t = await runOne(scamp, bench, iters);
+            const base = BASELINE[bench.key];
+            const ratio = t / base;
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td class="name">${bench.key}</td>
+              <td>${t.toFixed(3)}</td>
+              <td>${base.toFixed(3)}</td>
+              <td class="ratio ${ratio > 1 ? 'slower' : 'faster'}">${ratio.toFixed(2)}×</td>
+            `;
+            tbody.appendChild(tr);
+          }
+          await scamp.terminate();
+          $('status').textContent = 'done';
+        } catch (err) {
+          log('Error: ' + (err && err.message ? err.message : err));
+          $('status').textContent = 'error';
+        } finally {
+          $('run').disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -32,7 +32,10 @@ set(SCAMP_WASM_LINK_FLAGS
   "-sEXPORT_NAME=createSCAMPModule"
   "-sENVIRONMENT=web,worker,node"
   "-sALLOW_MEMORY_GROWTH=1"
-  "-sINITIAL_MEMORY=64MB"
+  # 256 MB up front keeps every demo-size input off the heap-growth path,
+  # which is particularly expensive in the MT build because the shared
+  # heap grow triggers cross-pthread synchronisation.
+  "-sINITIAL_MEMORY=256MB"
   "-sMAXIMUM_MEMORY=4GB"
   "-sEXPORTED_RUNTIME_METHODS=['HEAPF64','HEAPU8','HEAPU32','HEAP32','getExceptionMessage']"
   "-sEXPORT_EXCEPTION_HANDLING_HELPERS=1"
