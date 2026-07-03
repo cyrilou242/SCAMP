@@ -11,7 +11,7 @@
     "build:st": "bash build.sh st",
     "build:mt": "bash build.sh mt",
     "test": "node test/node-smoke.mjs",
-    "serve:demo": "npx --yes http-server . -p 8080 --cors -c-1"
+    "serve:demo": "node serve.mjs 8090"
   },
   "license": "Apache-2.0"
 }

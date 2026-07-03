@@ -33,6 +33,12 @@ async function loadWasm() {
   }
   Module = await factory({
     locateFile: (path) => baseUrl + path,
+    // Required in the MT build: Emscripten needs to know the URL of its
+    // own glue JS so it can spawn pthread Web Workers as `new Worker(url)`.
+    // When loaded via importScripts() inside a Worker, its self-discovery
+    // (`_scriptName`) yields undefined, and pthread bootstrap silently
+    // fetches `/undefined` in a hot loop.
+    mainScriptUrlOrBlob: jsFile,
     // Keep the runtime alive after main() returns so embind functions
     // stay callable (required in the MT / PROXY_TO_PTHREAD build).
     noExitRuntime: true,
@@ -64,9 +70,21 @@ async function handleRun(id, args) {
     const result = Module.runSCAMP(args, onProgress);
     post({ kind: 'result', id, result });
   } catch (err) {
-    const msg = err && err.message ? err.message : String(err);
-    // Filter Emscripten's PROXY_TO_PTHREAD bookkeeping so it doesn't
-    // surface as a run failure.
+    let msg;
+    if (err && err.message) {
+      msg = err.message;
+    } else if (typeof err === 'number' && Module && Module.getExceptionMessage) {
+      // Emscripten passes C++ exceptions to JS as a pointer (number);
+      // decode into [name, message] via the runtime helper.
+      try {
+        const info = Module.getExceptionMessage(err);
+        msg = Array.isArray(info) ? info.filter(Boolean).join(': ') : String(info);
+      } catch (_) {
+        msg = 'wasm exception (ptr=' + err + ')';
+      }
+    } else {
+      msg = String(err);
+    }
     if (/^(unwind|Program terminated with exit\(0\))$/.test(msg)) return;
     post({ kind: 'error', id, message: msg });
   }
