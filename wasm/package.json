@@ -1,0 +1,17 @@
+{
+  "name": "scamp-wasm",
+  "version": "0.1.0",
+  "description": "SCAMP matrix profile — WebAssembly build (single- and multi-threaded).",
+  "main": "dist/scamp.js",
+  "types": "dist/scamp.d.ts",
+  "files": ["dist/"],
+  "scripts": {
+    "setup": "bash setup.sh",
+    "build": "bash build.sh both",
+    "build:st": "bash build.sh st",
+    "build:mt": "bash build.sh mt",
+    "test": "node test/node-smoke.mjs",
+    "serve:demo": "npx --yes http-server . -p 8080 --cors -c-1"
+  },
+  "license": "Apache-2.0"
+}

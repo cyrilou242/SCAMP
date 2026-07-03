@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <functional>
 #include <list>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +39,14 @@ class SCAMP_Operation {
 
   // The number of completed tiles
   int completed_tiles_;
+
+  // Cooperative-cancellation flag polled by workers between tiles.
+  std::atomic<bool> abort_requested_{false};
+
+  // Optional progress hook fired after each completed tile with
+  // (completed_tiles, total_tiles). Set once before do_join(); read
+  // under counter_lock_ so worker threads see a consistent callable.
+  std::function<void(int, int)> progress_cb_;
 
   // The total number of tiles
   size_t total_tiles_;
@@ -76,6 +86,17 @@ class SCAMP_Operation {
                        const std::vector<double> &timeseries_b);
 
   int get_completed_tiles() { return completed_tiles_; }
+
+  size_t get_total_tiles() const { return total_tiles_; }
+
+  // Request cooperative abort. Safe to call from any thread; workers
+  // observe it between tile pops and finish promptly (partial results
+  // in profile_a_/profile_b_ are left as-is).
+  void request_abort() { abort_requested_.store(true); }
+
+  void set_progress_callback(std::function<void(int, int)> cb) {
+    progress_cb_ = std::move(cb);
+  }
 };
 
 }  // namespace SCAMP

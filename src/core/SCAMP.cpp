@@ -2,6 +2,8 @@
 #include <cinttypes>
 #include <cmath>
 #include <future>
+
+#include "core/scamp_async_shim.h"
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -104,6 +106,9 @@ void SCAMP_Operation::do_work(const std::vector<double> &timeseries_a,
     tile.InitProfile(profile_a_, profile_b_);
   }
   while (!work_queue_.empty()) {
+    if (abort_requested_.load()) {
+      break;
+    }
     std::pair<int, int> t = work_queue_.pop();
     if (t.first == -1 && t.second == -1) {
       // Another thread grabbed our tile and now the queue is empty
@@ -159,9 +164,16 @@ void SCAMP_Operation::do_work(const std::vector<double> &timeseries_a,
         done = true;
       }
     }
-    // Update our counter with a lock
-    std::unique_lock<std::mutex> lock(counter_lock_);
-    completed_tiles_++;
+    // Update our counter with a lock; fire progress hook under the same
+    // lock so the callback sees a monotonically increasing count and is
+    // serialised across worker threads.
+    {
+      std::unique_lock<std::mutex> lock(counter_lock_);
+      completed_tiles_++;
+      if (progress_cb_) {
+        progress_cb_(completed_tiles_, static_cast<int>(total_tiles_));
+      }
+    }
   }
   if (!NeedsIntermittentMerge(info_.profile_type)) {
     tile.MergeProfile(profile_a_, profile_b_);
@@ -238,16 +250,16 @@ SCAMPError_t SCAMP_Operation::do_join(const std::vector<double> &timeseries_a,
 
   // Start CUDA Workers
   for (int i = 0; i < devices_.size(); ++i) {
-    futures[i] = std::async(std::launch::async, &SCAMP_Operation::do_work, this,
-                            timeseries_a_clean, timeseries_b_clean, &info_,
-                            CUDA_GPU_WORKER, devices_.at(i));
+    futures[i] = scamp_launch(&SCAMP_Operation::do_work, this,
+                              timeseries_a_clean, timeseries_b_clean, &info_,
+                              CUDA_GPU_WORKER, devices_.at(i));
   }
 
   // Start CPU Workers
   for (int i = devices_.size(); i < num_workers; ++i) {
-    futures[i] = std::async(std::launch::async, &SCAMP_Operation::do_work, this,
-                            timeseries_a_clean, timeseries_b_clean, &info_,
-                            CPU_WORKER, -1);
+    futures[i] = scamp_launch(&SCAMP_Operation::do_work, this,
+                              timeseries_a_clean, timeseries_b_clean, &info_,
+                              CPU_WORKER, -1);
   }
 
   // wait for workers to be done
