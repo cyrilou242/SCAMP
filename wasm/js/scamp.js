@@ -143,13 +143,19 @@
           signal.addEventListener('abort', entry.onAbortCleanup, { once: true });
         }
         this._pending.set(id, entry);
+        // Forward the client-level thread count into the C++ args unless
+        // the caller pinned it explicitly. Without this, SCAMP_Operation
+        // defaults to a single worker and the MT wasm build spawns 8
+        // idle pthreads.
+        const cppArgs = Object.assign({}, args);
+        if (cppArgs.threads === undefined) cppArgs.threads = this._threads;
         // Transfer TypedArray buffers where present to avoid a copy.
         const transfer = [];
-        if (args && args.a && args.a.buffer && args.a.buffer instanceof ArrayBuffer)
-          transfer.push(args.a.buffer);
-        if (args && args.b && args.b.buffer && args.b.buffer instanceof ArrayBuffer)
-          transfer.push(args.b.buffer);
-        this._post({ kind: 'run', id, args, threads: this._threads }, transfer);
+        if (cppArgs.a && cppArgs.a.buffer instanceof ArrayBuffer)
+          transfer.push(cppArgs.a.buffer);
+        if (cppArgs.b && cppArgs.b.buffer instanceof ArrayBuffer)
+          transfer.push(cppArgs.b.buffer);
+        this._post({ kind: 'run', id, args: cppArgs }, transfer);
       });
     }
 
