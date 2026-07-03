@@ -44,6 +44,28 @@ extern "C" typedef struct {
     uint32_t size;
 } ClickhouseBuffer;
 
+// ---------------------------------------------------------------------
+// WASI stubs — satisfies the fd_*/clock_time_get imports Emscripten's
+// libc emits from otherwise-dead code paths (iostream, std::chrono).
+// SCAMP core does include these headers but its output is guarded by
+// silent_mode = true; nothing actually calls these at runtime.
+//
+// By defining strong C symbols with the WASI-libc naming convention
+// (`__wasi_<name>`), wasm-ld resolves the calls internally instead of
+// emitting them as `wasi_snapshot_preview1.<name>` imports. Net effect:
+// zero unresolved imports — the produced wasm loads in any wasm host,
+// including ClickHouse's wasmtime engine without any patch to it.
+// ---------------------------------------------------------------------
+#include <wasi/api.h>
+
+extern "C" {
+__attribute__((used)) __wasi_errno_t __wasi_fd_write(__wasi_fd_t, const __wasi_ciovec_t*, size_t, __wasi_size_t* nwritten)   { if (nwritten) *nwritten = 0; return 0; }
+__attribute__((used)) __wasi_errno_t __wasi_fd_read (__wasi_fd_t, const __wasi_iovec_t*,  size_t, __wasi_size_t* nread)      { if (nread) *nread = 0; return 0; }
+__attribute__((used)) __wasi_errno_t __wasi_fd_seek (__wasi_fd_t, __wasi_filedelta_t, __wasi_whence_t, __wasi_filesize_t* out) { if (out) *out = 0; return 0; }
+__attribute__((used)) __wasi_errno_t __wasi_fd_close(__wasi_fd_t)                                                            { return 0; }
+__attribute__((used)) __wasi_errno_t __wasi_clock_time_get(__wasi_clockid_t, __wasi_timestamp_t, __wasi_timestamp_t* out)    { if (out) *out = 0; return 0; }
+}
+
 namespace {
 
 // ---------------------------------------------------------------------
@@ -226,13 +248,10 @@ ClickhouseBuffer* scamp_selfjoin_1nn(ClickhouseBuffer* span, uint32_t n) {
         args.matrix_height = 0;
         args.matrix_width = 0;
 
-        try {
-            SCAMP::do_SCAMP(&args, /*devices=*/std::vector<int>{}, /*threads=*/1);
-        } catch (...) {
-            w.varUInt(0);
-            w.varUInt(0);
-            continue;
-        }
+        // Exceptions are disabled in this build (-fno-exceptions), so
+        // rely on SCAMP not throwing for valid input. Precondition: we
+        // already validated ts_len >= window above.
+        SCAMP::do_SCAMP(&args, /*devices=*/std::vector<int>{}, /*threads=*/1);
 
         const auto& packed = args.profile_a.data[0].uint64_value;
         const size_t m = packed.size();

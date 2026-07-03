@@ -29,32 +29,12 @@ if (!fs.existsSync(wasmPath)) {
   process.exit(2);
 }
 
-// -----------------------------------------------------------------
-// Minimal WASI/emscripten stubs.  Enough to instantiate the module.
-// -----------------------------------------------------------------
-function makeImports(getMemory) {
-  return {
-    env: {
-      // Emscripten notifies the host after wasm memory has grown so JS
-      // views can re-attach. We have no cached views, so no-op.
-      emscripten_notify_memory_growth: (_index) => {},
-    },
-    wasi_snapshot_preview1: {
-      // These end up called when the module lazily initialises stdio
-      // (from libc++ / iostream). We never actually print, but the
-      // symbols must resolve. Returning 0 = success.
-      clock_time_get: (_id, _prec, _ptr) => 0,
-      fd_write:       (_fd, _iovs, _cnt, nwritten_ptr) => {
-        // Report zero bytes written; caller falls through.
-        new DataView(getMemory().buffer).setUint32(nwritten_ptr, 0, true);
-        return 0;
-      },
-      fd_read:  () => 0,
-      fd_seek:  () => 0,
-      fd_close: () => 0,
-    },
-  };
-}
+// The wasm is built to be fully self-contained: WASI + emscripten
+// imports are resolved statically by C stubs inside the module (see
+// scamp_ch_udf.cpp). Instantiation needs zero host functions — which
+// is exactly what makes it loadable by ClickHouse's wasmtime engine
+// as-is, no ClickHouse patch required.
+function makeImports() { return {}; }
 
 // -----------------------------------------------------------------
 // RowBinary codec (must match the C++ side in scamp_ch_udf.cpp).
@@ -120,10 +100,13 @@ function synth(n, motifStarts = []) {
 
 async function main() {
   const wasmBytes = fs.readFileSync(wasmPath);
-  let memory;
-  const imports = makeImports(() => memory);
-  const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
-  memory = instance.exports.memory;
+  const { instance } = await WebAssembly.instantiate(wasmBytes, makeImports());
+  const memory = instance.exports.memory;
+
+  // Sanity: prove the module has zero host-provided imports.
+  const modInfo = WebAssembly.Module.imports(new WebAssembly.Module(wasmBytes));
+  assert(modInfo.length === 0, `expected 0 imports, got ${modInfo.length}: ${modInfo.map(i => i.module + '.' + i.name).join(', ')}`);
+  console.log('  self-contained (0 imports) OK');
   const heap = () => new Uint8Array(memory.buffer);
 
   const {

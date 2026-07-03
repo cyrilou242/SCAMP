@@ -5,11 +5,12 @@ ABI](https://clickhouse.com/docs/sql-reference/functions/wasm_udf) so
 the matrix profile can be computed inside a `CREATE FUNCTION ...
 LANGUAGE WASM` UDF, callable from SQL.
 
-**Status**: the wrapper ABI is correct — the produced wasm module can
-be loaded and invoked from any wasmtime-compatible host, and returns
-numeric output matching native SCAMP to fp-precision (~2e-7). It does
-**not** load in real ClickHouse today because of a WASI-imports gap
-described below.
+**Status**: the wrapper ABI is correct and the module is **fully
+self-contained**: zero unresolved imports, loads standalone under
+wasmtime CLI and Node's built-in `WebAssembly` with empty `{}` imports.
+Numeric output matches native SCAMP to fp precision (~2e-7). This means
+it will load in real ClickHouse as-is once you have a ClickHouse build
+with `USE_WASMTIME=1`.
 
 ## What's built
 
@@ -99,56 +100,52 @@ Latest run: motif recovered exactly, max distance diff vs native
 `2.34e-7`, zero index mismatches. 260 KB wasm, 4 ms UDF invocation for
 n=1024 / w=64.
 
-## The WASI-imports gap
+## How we got to zero unresolved imports
 
-The wasm module currently imports 6 symbols that ClickHouse's wasmtime
-host doesn't provide by default:
+A naïve `-sSTANDALONE_WASM=1` build of this wrapper emits 6 imports:
 
 ```
 env.emscripten_notify_memory_growth
-wasi_snapshot_preview1.clock_time_get
-wasi_snapshot_preview1.fd_write
-wasi_snapshot_preview1.fd_seek
-wasi_snapshot_preview1.fd_read
-wasi_snapshot_preview1.fd_close
+wasi_snapshot_preview1.{clock_time_get, fd_write, fd_seek, fd_read, fd_close}
 ```
 
-Root cause: SCAMP's core uses `std::vector`, `std::chrono`, C++
-exceptions, and iostream fallbacks in libc++. Emscripten's
-`-sSTANDALONE_WASM=1` mode preserves the code path but leaves those
-symbols as unresolved imports for the host to satisfy.
+These come from libc code paths (stdio + `std::chrono`) that SCAMP's
+core doesn't actually take at runtime (silent_mode is set), but whose
+code is still statically reachable so wasm-ld can't dead-code them out.
 
-ClickHouse's wasm host provides only:
+We eliminate them at build time with two changes:
 
+1. **Emscripten flags in [`CMakeLists.txt`](CMakeLists.txt)**:
+   `-sPURE_WASI=1 -sFILESYSTEM=0 -sDISABLE_EXCEPTION_CATCHING=1`
+   plus `-fno-exceptions -fno-rtti -fvisibility=hidden -flto`.
+   Removes `env.emscripten_notify_memory_growth`.
+2. **C stub definitions in [`src/scamp_ch_udf.cpp`](src/scamp_ch_udf.cpp)**
+   using the WASI-libc naming convention (`__wasi_fd_write` etc.).
+   wasm-ld resolves these strong symbols internally instead of emitting
+   them as imports. Nothing in SCAMP actually calls stdio at runtime, so
+   these stubs are never invoked — they just satisfy the linker.
+
+Together: **0 imports.** No ClickHouse patch required.
+
+## Getting a ClickHouse build with wasm UDF support
+
+WASM UDFs are a very recent addition (2025) and gated by a build-time
+flag. To use this wrapper you need a ClickHouse binary built with
+`USE_WASMTIME=1`:
+
+```sql
+SELECT count() FROM system.build_options
+WHERE name = 'USE_WASMTIME' AND value = '1'
 ```
-clickhouse_server_version
-clickhouse_throw
-clickhouse_log
-clickhouse_random
-env.abort            (AssemblyScript compat)
-```
 
-Attempting to instantiate the module inside a real ClickHouse instance
-would fail with a "missing import" error at `CREATE FUNCTION` time.
-
-### How to close the gap
-
-Three approaches, in decreasing effort:
-
-1. **Provide the WASI imports host-side** — patch ClickHouse's wasmtime
-   engine to also link `wasmtime-wasi`. Small (~50 LOC) but requires
-   upstream buy-in.
-2. **Post-process the wasm** with a WASI-shim tool (e.g. `wasi-shim`
-   or the `wasmtime-wasi-preview1-adapter`) that inlines stub
-   implementations of the imports. Doable today without ClickHouse
-   changes. Grows the binary by ~30 KB.
-3. **Extract a libc-free SCAMP kernel** — a fresh `wasm32-unknown-unknown`
-   build target that uses raw arrays, no exceptions, no iostream, no
-   `std::chrono`. Clean but a real engineering project (~1–2 weeks).
-
-The test harness in `test/test_udf.mjs` shows what approach (1) would
-look like at runtime — it provides no-op stubs for those 6 imports
-and demonstrates the module works correctly under them.
+If this returns 0, your ClickHouse doesn't have the wasm UDF feature
+compiled in — `system.webassembly_modules` won't exist even after
+setting `<allow_experimental_webassembly_udf>true</allow_experimental_webassembly_udf>`
+in the server config. As of late 2025, the official
+`clickhouse/clickhouse-server` Docker images don't ship with
+`USE_WASMTIME=1`. Nightly builds of `ClickHouse/ClickHouse` master
+include it. The test harness under `test/` proves everything works
+standalone via wasmtime, decoupled from image availability.
 
 ## Limitations of the current wrapper
 
