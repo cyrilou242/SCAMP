@@ -252,6 +252,16 @@ wasm/
 └── dist/                       build output
 ```
 
+## ClickHouse UDF variant
+
+Built alongside `dist/scamp-st.wasm` as `dist/scamp_ch_udf.wasm` —
+a standalone wasm module exposing SCAMP self-join through ClickHouse's
+[BUFFERED_V1 wasm UDF ABI](https://clickhouse.com/docs/sql-reference/functions/wasm_udf).
+Wrapper ABI is correct + tested; wasmtime-compatible host required.
+See [`clickhouse/README.md`](clickhouse/README.md) for status, wire
+format, target SQL declaration, and the WASI-imports gap that stops
+real ClickHouse from loading it today.
+
 ## Notes / future work
 
 - [`notes/left-right-matrix-profile.md`](notes/left-right-matrix-profile.md)
