@@ -143,6 +143,13 @@ if (SCAMP_BUILD_WASM AND SCAMP_WASM_THREADS)
   add_compile_options(-pthread)
   add_link_options(-pthread)
 endif()
+if (SCAMP_BUILD_WASM)
+  # Turn on wasm SIMD128 + expose the SSE intrinsic set through
+  # Emscripten's <xmmintrin.h>/<emmintrin.h>/... shim. Together these
+  # trigger Eigen's SSE2 vectorisation path (Packet2d, 2 doubles per
+  # 128-bit lane) in the SCAMP baseline kernel with zero source changes.
+  add_compile_options(-msimd128 -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2)
+endif()
 
 if (SCAMP_ENABLE_BINARY_DISTRIBUTION)
   message(STATUS "Building REDISTRIBUTABLE SCAMP Binary.")
