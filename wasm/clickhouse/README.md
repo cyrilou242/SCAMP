@@ -81,11 +81,20 @@ wasm/build.sh st             # produces wasm/dist/scamp_ch_udf.wasm
 
 ## Testing
 
+Two test targets:
+
 ```bash
+# Fast: load the wasm via Node's built-in WebAssembly, exercise the ABI,
+# cross-check output vs native SCAMP. No docker required. ~1 second.
 node wasm/clickhouse/test/test_udf.mjs
+
+# End-to-end: spin up clickhouse/clickhouse-server:head in Docker,
+# load the UDF, run SQL queries, verify output. Needs docker.
+# First run pulls ~500 MB; subsequent runs reuse the image. ~30 s.
+node wasm/clickhouse/test/test_clickhouse.mjs
 ```
 
-The test harness:
+The fast harness (`test_udf.mjs`):
 
 1. Loads `scamp_ch_udf.wasm` with a minimal stub for the WASI /
    Emscripten imports (see below).

@@ -14,6 +14,7 @@
     "test:smoke": "node test/node-smoke.mjs",
     "test:correctness": "node test/correctness.mjs",
     "test:ch-udf": "node clickhouse/test/test_udf.mjs",
+    "test:ch-e2e": "node clickhouse/test/test_clickhouse.mjs",
     "serve:demo": "node serve.mjs 8090"
   },
   "license": "Apache-2.0"
