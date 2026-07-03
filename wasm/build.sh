@@ -60,6 +60,10 @@ build_variant() {
       cp "${build_dir}/wasm/scamp-mt.worker.js" "${DIST_DIR}/"
     fi
   fi
+  # The ClickHouse UDF variant is a byproduct of the ST configure.
+  if [[ "${variant}" == "st" && -f "${build_dir}/wasm/clickhouse/scamp_ch_udf.wasm" ]]; then
+    cp "${build_dir}/wasm/clickhouse/scamp_ch_udf.wasm" "${DIST_DIR}/"
+  fi
 }
 
 case "${MODE}" in

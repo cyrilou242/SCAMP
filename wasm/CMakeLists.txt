@@ -79,3 +79,12 @@ set_target_properties(scamp_wasm PROPERTIES
 if (SCAMP_WASM_THREADS)
   target_link_options(scamp_wasm PRIVATE -pthread)
 endif()
+
+# ClickHouse UDF variant (built only in the ST configuration since
+# ClickHouse's wasm runtime doesn't support pthreads).
+if (NOT SCAMP_WASM_THREADS)
+  option(SCAMP_BUILD_CLICKHOUSE_UDF "Also build the ClickHouse-loadable wasm UDF wrapper" ON)
+  if (SCAMP_BUILD_CLICKHOUSE_UDF)
+    add_subdirectory(clickhouse)
+  endif()
+endif()
