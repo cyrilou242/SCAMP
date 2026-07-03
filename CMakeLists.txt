@@ -144,11 +144,13 @@ if (SCAMP_BUILD_WASM AND SCAMP_WASM_THREADS)
   add_link_options(-pthread)
 endif()
 if (SCAMP_BUILD_WASM)
-  # Turn on wasm SIMD128 + expose the SSE intrinsic set through
-  # Emscripten's <xmmintrin.h>/<emmintrin.h>/... shim. Together these
-  # trigger Eigen's SSE2 vectorisation path (Packet2d, 2 doubles per
-  # 128-bit lane) in the SCAMP baseline kernel with zero source changes.
-  add_compile_options(-msimd128 -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2)
+  # Turn on wasm SIMD128 + expose the full SSE/AVX intrinsic set through
+  # Emscripten's <xmmintrin.h>/<emmintrin.h>/<avxintrin.h>/... shims.
+  # Together these define __SSE*__ and __AVX__ at build time, which
+  # triggers Eigen's AVX vectorisation path (Packet4d, 4 doubles per
+  # 256-bit logical vector, lowered by Emscripten to pairs of 128-bit
+  # wasm SIMD ops with better unrolling than the SSE path).
+  add_compile_options(-msimd128 -msse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mavx)
 endif()
 
 if (SCAMP_ENABLE_BINARY_DISTRIBUTION)
