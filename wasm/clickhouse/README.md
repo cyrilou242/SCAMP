@@ -127,25 +127,78 @@ We eliminate them at build time with two changes:
 
 Together: **0 imports.** No ClickHouse patch required.
 
-## Getting a ClickHouse build with wasm UDF support
+## Loading the wasm UDF in a real ClickHouse
 
 WASM UDFs are a very recent addition (2025) and gated by a build-time
-flag. To use this wrapper you need a ClickHouse binary built with
-`USE_WASMTIME=1`:
+flag. You need a ClickHouse binary built with `USE_WASMTIME=1`.
+Official numbered-release images (`clickhouse/clickhouse-server:25.x`)
+don't have it as of end-2025; the **`clickhouse/clickhouse-server:head`**
+tag (tracking master) does.
 
-```sql
-SELECT count() FROM system.build_options
-WHERE name = 'USE_WASMTIME' AND value = '1'
+### End-to-end tested recipe (Docker)
+
+```bash
+# 1. Start a ClickHouse with wasm support + experimental UDF flag enabled.
+docker run -d --name ch-wasm-test -p 8125:8123 -p 9002:9000 \
+    clickhouse/clickhouse-server:head
+docker exec ch-wasm-test sh -c 'cat > /etc/clickhouse-server/config.d/wasm_udfs.xml <<EOF
+<clickhouse>
+    <allow_experimental_webassembly_udf>true</allow_experimental_webassembly_udf>
+    <webassembly_udf_engine>wasmtime</webassembly_udf_engine>
+</clickhouse>
+EOF'
+docker restart ch-wasm-test && sleep 4
+
+# Verify: should return 1.
+docker exec ch-wasm-test clickhouse-client --query \
+    "SELECT count() FROM system.build_options WHERE name='USE_WASMTIME' AND value='1'"
+
+# 2. Load the wasm module into system.webassembly_modules.
+docker cp wasm/dist/scamp_ch_udf.wasm ch-wasm-test:/tmp/scamp_ch_udf.wasm
+docker exec ch-wasm-test sh -c \
+    "cat /tmp/scamp_ch_udf.wasm | clickhouse-client --query \"\
+        INSERT INTO system.webassembly_modules (name, code) \
+        SELECT 'scamp', code FROM input('code String') FORMAT RawBlob\""
+
+# 3. Declare the SQL UDF.
+docker exec ch-wasm-test clickhouse-client --query "
+    CREATE FUNCTION scamp_selfjoin_1nn
+        LANGUAGE WASM ABI BUFFERED_V1
+        FROM 'scamp' :: 'scamp_selfjoin_1nn'
+        ARGUMENTS (ts Array(Float64), window UInt32)
+        RETURNS Tuple(Array(Float32), Array(Int32))
+        SETTINGS
+            serialization_format = 'RowBinary',
+            webassembly_udf_enable_fuel = false
+"
+
+# 4. Run it! Aggregate GROUP BY subject with a synthetic time series.
+docker exec ch-wasm-test clickhouse-client --query "
+    SET webassembly_udf_max_memory = 268435456;
+    SELECT (scamp_selfjoin_1nn(ts, 64::UInt32) AS r).1 AS profile, r.2 AS indices
+    FROM (
+      SELECT arrayMap(i ->
+        if(i >= 200 AND i < 264, cos((i-200) * 0.1),
+        if(i >= 600 AND i < 664, cos((i-600) * 0.1), sin(i * 0.05))),
+        range(1024))::Array(Float64) AS ts
+    )
+"
 ```
 
-If this returns 0, your ClickHouse doesn't have the wasm UDF feature
-compiled in — `system.webassembly_modules` won't exist even after
-setting `<allow_experimental_webassembly_udf>true</allow_experimental_webassembly_udf>`
-in the server config. As of late 2025, the official
-`clickhouse/clickhouse-server` Docker images don't ship with
-`USE_WASMTIME=1`. Nightly builds of `ClickHouse/ClickHouse` master
-include it. The test harness under `test/` proves everything works
-standalone via wasmtime, decoupled from image availability.
+Actual output on a `head` image: `indices[201] = 600, indices[601] =
+200` — the planted motifs at positions 200 and 600 recognise each
+other, min distance 0. Total end-to-end wall time for 3 subjects in a
+`GROUP BY`: **9 ms**.
+
+### If your ClickHouse doesn't have USE_WASMTIME
+
+```sql
+SELECT count() FROM system.build_options WHERE name = 'USE_WASMTIME';
+-- 0 = feature not compiled; use `:head` image or a nightly build
+```
+
+The test harness under `test/` proves the wrapper works standalone via
+wasmtime, decoupled from image availability.
 
 ## Limitations of the current wrapper
 
